@@ -1,0 +1,297 @@
+# importing necessary packages 
+
+import matplotlib.pyplot as plt
+from matplotlib import pylab
+import numpy as np
+import wave
+import sys
+from scipy import signal
+from sklearn.decomposition import FastICA
+import pylab as py
+from scipy import ndimage
+import math
+import sklearn.decomposition as decomposition
+import matplotlib.image as mpimg
+from PIL import Image
+from math import sqrt
+from sklearn import decomposition 
+
+#function definitions
+def icaComponents(array, components=20):
+    icatemp = decomposition.FastICA(n_components=components)
+    return icatemp.fit(array).components_
+
+#Gabor helper function
+def gaborCalc(x, y, sx, sy, fx, fy):
+    p1 = (1/(2*math.pi*sx*sy))
+    p2 = math.exp(-0.5*(((x*x)/(sx*sx))+((y*y)/(sy*sy))))
+    p3 = math.cos(2*math.pi*(fx*x+fy*y))
+    return p1 * p2 * p3
+
+def gaborFilter(sizeX = 16, sizeY = 16, sx = 2.0, sy = 3.5, fx = 0.2, fy = 0.0):
+    return [[gaborCalc(x-7.5,y-7.5,sx,sy,fx,fy) for x in range(sizeX)] for y in range(sizeY)]
+
+def collect_natural_patches(img_folder, num_patches = 5000, patch_width = 8, downsample=2):
+  """ collects image patches, in the same way as the LGN model, for analysis 
+  the natural images are from a specific folder of 13 .tiff files"""
+
+  max_tries = num_patches * 50
+  image_width = 200
+  img_first_patch = 0 # the first patch number accepted from an image
+  img_first_try = 0 # the first attempt to take a patch from the image
+  patch_cnt = 0
+  try_cnt = 0
+  ds = downsample
+  w = patch_width * ds
+  d = w * w
+  d_final = patch_width * patch_width
+  avg_filt = np.ones([ds, ds],'float') / ds**2
+
+  layer_patch = np.zeros([1,w,w],float)
+  down_patch = np.zeros([1,patch_width,patch_width],'float')  
+  patch = np.zeros([d,1],float)
+  
+  img_patches = np.zeros( [d_final,num_patches],float)
+
+  # change the image sampled from
+  nat_img_cnt = 1  
+  active = Image.open(img_folder + '/' + str(nat_img_cnt) + '.tiff')
+  active = np.asarray(active, 'double').transpose()  
+  
+  # normalizing the activity image
+  active -= active.mean()
+  active /= active.std()
+      
+  # collect the patches
+  while patch_cnt < num_patches and try_cnt < max_tries:
+    try_cnt += 1  # number of total patches attempted
+
+    if (try_cnt - img_first_try) > 50000 or \
+      (patch_cnt - img_first_patch) > num_patches/12:
+      # change the image sampled from
+      nat_img_cnt += 1
+      active = Image.open(img_folder + '/' + str(nat_img_cnt) + '.tiff')
+      active = np.asarray(active, 'double').transpose()        
+      # normalizing the activity image
+      active -= active.mean()
+      active /= active.std()
+      
+      img_first_patch = patch_cnt
+      img_first_try = try_cnt
+      print (float(patch_cnt)/num_patches)
+    
+    px = np.random.randint(0,image_width - w)
+    py = np.random.randint(0,image_width - w)
+        
+    layer_patch[0,:,:] = active[px:px+w,py:py+w].copy()
+    patch_std = layer_patch.std()
+    
+    if patch_std > 0.0:
+      # create the patch vector
+      # downsample the patch
+      for x in range(patch_width):
+        for y in range(patch_width):
+          down_patch[0,x,y] = np.sum(avg_filt * layer_patch[0,ds*x:ds*x+ds,ds*y:ds*y+ds])      
+      patch = np.reshape(down_patch, d_final)     
+      patch = patch - np.mean(patch)         
+      img_patches[:,patch_cnt] = patch.copy()
+      patch_cnt += 1
+  return img_patches
+
+def show_patches_mat(pre_patches, show_patch_num = 16, display=True, num_layers=1):
+  """ this function generates a 2D array to display image patches """
+
+  patches = pre_patches
+  tot_patches = patches.shape[1]
+  data_dim = patches.shape[0]
+  patch_width = np.sqrt(data_dim / num_layers)
+  
+  # extract show_patch_num patches
+  disp_patch = np.zeros([data_dim, show_patch_num], float)
+  
+  for i in range(0,show_patch_num):
+    patch_i = i * tot_patches // show_patch_num
+    patch = patches[:,patch_i].copy()
+    pmax  = patch.max()
+    pmin = patch.min()
+    
+    # fix patch range from min to max to 0 to 1
+    if pmax > pmin: 
+      patch = (patch - pmin) / (pmax - pmin)
+    disp_patch[:,i] = patch.copy()
+
+  bw = 5    # border width
+  pw_y = patch_width
+  pw_x = patch_width * num_layers + (num_layers-1)*bw
+  
+  patches_y = int(np.sqrt(show_patch_num))
+  patches_x = int(np.ceil(float(show_patch_num) / patches_y))
+  patch_img = disp_patch.max() * np.ones([(pw_x + bw) * patches_x - bw,
+    patches_y * (pw_y + bw) - bw], float)
+  for i in range(0,show_patch_num): 
+    y_i = int(i / patches_y)
+    x_i = i % patches_y
+    reshaped = disp_patch[:,i].reshape((num_layers,patch_width,patch_width))
+    full_patch = np.zeros([pw_x, pw_y], float)
+    full_patch[0:patch_width,:] = reshaped[0,:,:].copy()
+    if num_layers == 2:
+      full_patch[patch_width + bw - 1:2 * patch_width + bw, :] = reshaped[1,:,:].copy()
+    patch_img[x_i*(pw_x+bw):x_i*(pw_x+bw)+pw_x,y_i*(pw_y+bw):y_i*(pw_y+bw)+pw_y] = full_patch
+  
+  if display:
+    py.bone()
+    py.imshow(patch_img.T, interpolation='nearest')
+    py.axis('off')
+    py.show()
+  return patch_img
+
+#Convert 256x arrays back to 16x16 arrays
+def delinearize(array):
+    size = sqrt(len(array))
+    outarray = []
+    temp = []
+    counter = 1
+    for i in range(len(array)):
+        if size != counter:
+            temp.append(array[i])
+            counter += 1
+        else:
+            outarray.append(temp)
+            temp=[]
+            counter=1
+    return outarray
+
+def pcaComponents(array, components=10):
+    pcatemp = decomposition.PCA(n_components=components)
+    pcafit = pcatemp.fit(array)
+    print(pcafit.explained_variance_ratio_)   
+    return pcafit.components_
+
+# opening the sound file
+spf = wave.open('speech.wav','r')
+
+# extract raw audio from .wav file
+signal = spf.readframes(-1)
+signal = np.fromstring(signal, 'Int16')
+fs = spf.getframerate()
+
+# basic information printed 
+print('Sound Information:')
+print('Number of Samples:', len(signal))
+print('Hertz: %s Hz' % (fs))
+print('Seconds: %s seconds' %(len(signal)/fs))
+
+Time=np.linspace(0, len(signal)/fs, num=len(signal))
+
+# plot figure
+num_samples = len(signal)
+plt.figure(1)
+
+# titles
+plt.title('Bear Roaring')
+plt.xlabel('Time in Seconds')
+plt.ylabel('Frequency')
+start = 500000
+width = 100
+plt.plot(Time[start:start+width],signal[start:start+width])
+plt.savefig("bear.pdf")
+plt.plot(Time, signal)
+
+
+#show figure
+plt.show()
+
+# making a matrix -- features by samples
+num_clips = 100000
+audio_clips = np.zeros((num_clips,width))
+for i in range(num_clips):
+    x_start = np.random.randint(0,num_samples-width-2)
+    audio_clips[i,:] = signal[x_start:x_start+width]
+
+print(audio_clips.shape)
+    
+# show individual components
+plt.figure()
+cnt = 0
+for start in range(1000,16000,1000):
+    cnt += 1
+    plt.subplot(4,4,cnt)
+    frame = pylab.gca()
+    frame.axes.get_xaxis().set_ticklabels([])
+    frame.axes.get_yaxis().set_ticklabels([])
+    plt.plot(range(width),audio_clips[cnt,:])
+    
+plt.savefig("indvComp.pdf")
+
+icacomp = icaComponents(audio_clips)
+
+plt.figure()
+cnt = 0
+for cnt in range(20):
+    plt.subplot(5,5,cnt+1)
+    frame = pylab.gca()
+    frame.axes.get_xaxis().set_ticklabels([])
+    frame.axes.get_yaxis().set_ticklabels([])
+    plt.axis("off")
+    plt.plot(range(width),icacomp[cnt,:])
+    plt.savefig('bearfilters.pdf')
+
+#show plots in the notebook
+py.bone()
+
+gabor_filter = gaborFilter()
+
+print('mean before centering:',np.mean(gabor_filter))
+gabor_filter = np.array(gabor_filter)
+pos_ind = gabor_filter >= 0
+neg_ind = gabor_filter < 0
+pos_sum = np.sum(gabor_filter[pos_ind])
+neg_sum = np.sum(gabor_filter[neg_ind])
+gabor_filter[neg_ind] = - pos_sum / neg_sum * gabor_filter[neg_ind]
+gabor_filter = list(gabor_filter)
+print('mean after centering:',np.mean(gabor_filter))
+
+py.imshow(gabor_filter)
+py.colorbar()
+
+#you can change image w/ different number 
+img = mpimg.imread('images/11.tiff')
+
+# show the image
+fig = py.figure(figsize=(18,20))
+fig.add_subplot(2,1,1)
+py.imshow(img, cmap=py.cm.Greys_r)
+
+fig.savefig("pic4.pdf")
+
+#Convolve with the gabor filter
+img_gabor = ndimage.convolve(img.astype(float), gabor_filter, mode='reflect', cval=0.0)
+fig.add_subplot(2,1,2)
+py.imshow(img_gabor, cmap=py.cm.Greys_r)
+        
+patches_mat = collect_natural_patches('images', num_patches=50000)
+print(patches_mat.shape)
+
+show_patches_mat(patches_mat)
+
+# finding PCA components
+num_components = 20
+pcacomp = pcaComponents(np.transpose(patches_mat), components = num_components)
+
+fig = py.figure(figsize=(15,12))
+for i in range(num_components):
+    fig.add_subplot(np.ceil(num_components/5),5,i+1)
+    py.imshow(delinearize(pcacomp[i]))
+    py.axis("off")
+
+num_components = 50
+icacomp = icaComponents(np.transpose(patches_mat), components = num_components)
+
+print(icacomp.shape)
+
+fig = py.figure(figsize=(15,12))
+
+for i in range(num_components):
+    fig.add_subplot(np.ceil(num_components/5),5,i+1)
+    py.imshow(delinearize(icacomp[i]))
+    py.axis("off")
